@@ -1,0 +1,158 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mi Nube</title>
+<style>
+body{font-family:Arial,sans-serif;background:#101827;color:#f1f5f9;margin:0;padding:24px}
+main{max-width:700px;margin:30px auto}
+section{background:#1e293b;padding:22px;border-radius:14px;margin-bottom:18px}
+input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:10px;border-radius:8px;font-size:16px}
+input{background:#0f172a;color:white;border:1px solid #475569}
+button{background:#38bdf8;border:0;cursor:pointer;font-weight:bold}
+.secondary{background:#334155;color:white}
+.danger{background:#7f1d1d;color:white}
+.file{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 0;border-top:1px solid #475569;overflow-wrap:anywhere}
+.file button{width:auto}
+[hidden]{display:none!important}
+#status{overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<main>
+<section>
+<h1>☁️ Mi Nube</h1>
+<p>Tu espacio personal para guardar archivos.</p>
+<p id="status">Conectando...</p>
+</section>
+<section id="auth">
+<h2>Tu cuenta</h2>
+<form id="login">
+<input id="email" type="email" placeholder="Correo electrónico" required>
+<input id="password" type="password" minlength="8" placeholder="Contraseña (mínimo 8 caracteres)" required>
+<button type="submit">Iniciar sesión</button>
+</form>
+<button id="register" class="secondary">Crear cuenta</button>
+</section>
+<section id="cloud" hidden>
+<p>Cuenta: <b id="userEmail"></b></p>
+<button id="logout" class="secondary">Cerrar sesión</button>
+<h2>Subir archivos</h2>
+<input type="file" id="filesInput" multiple>
+<button id="upload">Subir archivos</button>
+<h2>Mis archivos</h2>
+<button id="refresh" class="secondary">Actualizar lista</button>
+<div id="fileList"></div>
+</section>
+</main>
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+
+const SUPABASE_URL = 'https://lmmlhiowpthedgcvfdur.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_s9QQDgqOA3S7GdUYXUH52A_Xxpkbiqw';
+const BUCKET = 'archivos';
+const db = createClient(SUPABASE_URL, SUPABASE_KEY);
+const $ = id => document.getElementById(id);
+let user = null;
+
+function status(message){$('status').textContent=message;}
+
+async function refreshSession(){
+  const {data,error}=await db.auth.getSession();
+  if(error){status(error.message);return;}
+  user=data.session?.user||null;
+  $('auth').hidden=!!user;
+  $('cloud').hidden=!user;
+  $('userEmail').textContent=user?.email||'';
+  if(user){status('Sesión iniciada.');await listFiles();}
+  else status('Iniciá sesión o creá una cuenta.');
+}
+
+$('login').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const {error}=await db.auth.signInWithPassword({
+    email:$('email').value.trim(),
+    password:$('password').value
+  });
+  if(error)status('Error: '+error.message);
+  else await refreshSession();
+});
+
+$('register').addEventListener('click',async()=>{
+  const email=$('email').value.trim();
+  const password=$('password').value;
+  if(!email||password.length<8){status('Ingresá un correo y una contraseña de al menos 8 caracteres.');return;}
+  const {data,error}=await db.auth.signUp({email,password});
+  if(error)status('Error: '+error.message);
+  else if(!data.session)status('Revisá tu correo para confirmar la cuenta.');
+  else await refreshSession();
+});
+
+$('logout').addEventListener('click',async()=>{
+  const {error}=await db.auth.signOut();
+  if(error)status(error.message);
+  else await refreshSession();
+});
+
+$('upload').addEventListener('click',async()=>{
+  if(!user)return;
+  const files=[...$('filesInput').files];
+  if(!files.length){status('Seleccioná primero un archivo.');return;}
+  for(const file of files){
+    const path=`${user.id}/${file.name}`;
+    const {error}=await db.storage.from(BUCKET).upload(path,file,{upsert:false});
+    if(error){status(`Error al subir ${file.name}: ${error.message}`);return;}
+  }
+  $('filesInput').value='';
+  status('Archivos subidos correctamente.');
+  await listFiles();
+});
+
+async function listFiles(){
+  if(!user)return;
+  const {data,error}=await db.storage.from(BUCKET).list(user.id,{limit:100});
+  if(error){status('Error al listar: '+error.message);return;}
+  $('fileList').replaceChildren();
+  const files=(data||[]).filter(f=>f.name&&!f.name.startsWith('.'));
+  if(!files.length){$('fileList').textContent='Todavía no hay archivos.';return;}
+  for(const file of files){
+    const path=`${user.id}/${file.name}`;
+    const row=document.createElement('div');
+    row.className='file';
+    const name=document.createElement('span');
+    name.textContent=file.name;
+    const actions=document.createElement('div');
+    const download=document.createElement('button');
+    download.textContent='Descargar';
+    download.addEventListener('click',async()=>{
+      const {data,error}=await db.storage.from(BUCKET).download(path);
+      if(error){status(error.message);return;}
+      const url=URL.createObjectURL(data);
+      const a=document.createElement('a');
+      a.href=url;a.download=file.name;a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),60000);
+    });
+    const remove=document.createElement('button');
+    remove.textContent='Eliminar';
+    remove.className='danger';
+    remove.addEventListener('click',async()=>{
+      if(!confirm('¿Eliminar '+file.name+'?'))return;
+      const {error}=await db.storage.from(BUCKET).remove([path]);
+      if(error){status(error.message);return;}
+      status('Archivo eliminado.');
+      await listFiles();
+    });
+    actions.append(download,remove);
+    row.append(name,actions);
+    $('fileList').append(row);
+  }
+}
+
+$('refresh').addEventListener('click',listFiles);
+db.auth.onAuthStateChange(()=>{refreshSession();});
+await refreshSession();
+</script>
+</body>
+</html>
